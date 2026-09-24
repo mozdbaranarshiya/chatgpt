@@ -1,337 +1,532 @@
 /* GPT Yar Commerce Admin v4.6.3
- * Authenticated admin UI for coupons and catalog prices.
- * It never overrides checkout totals in the browser.
+ * Verified storefront endpoints + configurable authenticated admin endpoints.
+ * Verified endpoints are used only for read/validation actions in the active gptyar.com tab.
+ * Unknown admin write routes stay disabled until explicitly configured.
  */
 ;(() => {
   "use strict";
 
-  const STORE_KEY = "gptyarCommerceAdminConfigV1";
+  const STORE_KEY = "gptyarCommerceAdminConfigV2";
   const ROOT_ID = "gptyarCommerceAdminRoot";
   const BTN_ID = "gptyarCommerceAdminOpen";
+
   const DEFAULTS = {
-    couponList: "/accupdator/coupons",
-    couponCreate: "/accupdator/coupons",
-    couponUpdate: "/accupdator/coupons/{id}",
-    couponDelete: "/accupdator/coupons/{id}",
-    productList: "/accupdator/products",
-    productPriceUpdate: "/accupdator/products/{id}/price"
+    discountValidate: "https://www.gptyar.com/api/checkout/discount",
+    cartRead: "https://www.gptyar.com/api/cart",
+    couponList: "",
+    couponCreate: "",
+    couponUpdate: "",
+    couponDelete: "",
+    productList: "",
+    productPriceUpdate: ""
   };
 
-  let cfg = Object.assign({}, DEFAULTS);
+  let cfg = {...DEFAULTS};
   let root = null;
   let coupons = [];
 
-  function qs(sel, scope) { return (scope || document).querySelector(sel); }
-  function qsa(sel, scope) { return Array.from((scope || document).querySelectorAll(sel)); }
+  const $ = (s, scope=document) => scope.querySelector(s);
+  const $$ = (s, scope=document) => Array.from(scope.querySelectorAll(s));
+
   function esc(v) {
-    return String(v == null ? "" : v)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    return String(v ?? "")
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#039;");
   }
+
   function apiBase() {
     try {
-      if (typeof CONFIG !== "undefined" && CONFIG && CONFIG.API_SERVER) {
-        return String(CONFIG.API_SERVER).replace(/\/$/, "");
+      if (typeof CONFIG !== "undefined" && CONFIG?.API_SERVER) {
+        return String(CONFIG.API_SERVER).replace(/\/$/,"");
       }
     } catch (_) {}
     return "https://api.gptyar.com";
   }
+
   function token() {
     try {
-      return typeof PopupState !== "undefined" && PopupState && PopupState.token
-        ? String(PopupState.token) : "";
-    } catch (_) { return ""; }
+      return typeof PopupState !== "undefined" && PopupState?.token
+        ? String(PopupState.token)
+        : "";
+    } catch (_) {
+      return "";
+    }
   }
-  function urlOf(tpl, values) {
-    let path = String(tpl || "");
-    Object.entries(values || {}).forEach(([k, v]) => {
-      path = path.split("{" + k + "}").join(encodeURIComponent(String(v == null ? "" : v)));
-    });
+
+  function resolveUrl(value, params={}) {
+    let path = String(value || "").trim();
+    if (!path) throw new Error("Endpoint تنظیم نشده است.");
+    for (const [k,v] of Object.entries(params)) {
+      path = path.split("{" + k + "}").join(encodeURIComponent(String(v ?? "")));
+    }
     if (/^https:\/\//i.test(path)) return path;
-    if (path.charAt(0) !== "/") path = "/" + path;
+    if (!path.startsWith("/")) path = "/" + path;
     return apiBase() + path;
   }
-  async function request(path, method, body, values) {
-    const headers = {Accept: "application/json"};
+
+  async function adminRequest(endpoint, method="GET", body=null, params={}) {
+    const headers = {Accept:"application/json"};
     const t = token();
     if (t) headers.Authorization = "Bearer " + t;
-    if (body !== undefined && body !== null) headers["Content-Type"] = "application/json";
-    const response = await fetch(urlOf(path, values), {
-      method: method || "GET",
+    if (body !== null && body !== undefined) headers["Content-Type"] = "application/json";
+
+    const response = await fetch(resolveUrl(endpoint, params), {
+      method,
       headers,
-      cache: "no-store",
-      body: body !== undefined && body !== null ? JSON.stringify(body) : undefined
+      cache:"no-store",
+      body: body !== null && body !== undefined ? JSON.stringify(body) : undefined
     });
+
     const text = await response.text();
     let data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch (_) { data = text; }
-    }
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+
     if (!response.ok) {
-      const e = new Error("HTTP " + response.status + (text ? " - " + text.slice(0, 400) : ""));
-      e.status = response.status;
-      e.data = data;
-      throw e;
+      const err = new Error("HTTP " + response.status + (text ? " - " + text.slice(0,400) : ""));
+      err.status = response.status;
+      err.data = data;
+      throw err;
     }
     return data;
   }
-  function arrayOf(data, keys) {
-    if (Array.isArray(data)) return data;
-    if (!data || typeof data !== "object") return [];
-    for (const k of keys) if (Array.isArray(data[k])) return data[k];
-    if (data.data) {
-      if (Array.isArray(data.data)) return data.data;
-      for (const k of keys) if (Array.isArray(data.data[k])) return data.data[k];
-    }
-    return [];
+
+  function activeTab() {
+    return new Promise((resolve,reject) => {
+      chrome.tabs.query({active:true,currentWindow:true}, tabs => {
+        const err = chrome.runtime.lastError;
+        if (err) return reject(new Error(err.message));
+        const tab = tabs?.[0];
+        if (!tab?.id) return reject(new Error("تب فعال پیدا نشد."));
+        resolve(tab);
+      });
+    });
   }
-  function couponId(x) { return x && (x.id || x.couponId || x.coupon_id || x.uuid || x.code); }
-  function couponCode(x) { return x && (x.code || x.coupon || x.name || x.title) || "(بدون کد)"; }
-  function status(msg, kind) {
-    const el = qs("#commerceStatus", root);
+
+  async function pageRequest(url, method="GET", body=null) {
+    const tab = await activeTab();
+    const tabUrl = String(tab.url || "");
+    if (!/^https:\/\/([^.]+\.)?gptyar\.com\//i.test(tabUrl)) {
+      throw new Error("ابتدا یکی از صفحات gptyar.com را در تب فعال باز کنید.");
+    }
+
+    const [{result}] = await chrome.scripting.executeScript({
+      target:{tabId:tab.id},
+      world:"MAIN",
+      func: async (u,m,b) => {
+        const r = await fetch(u, {
+          method:m,
+          credentials:"include",
+          cache:"no-store",
+          headers:{
+            "Accept":"application/json",
+            ...(b !== null ? {"Content-Type":"application/json"} : {})
+          },
+          body:b !== null ? JSON.stringify(b) : undefined
+        });
+
+        const text = await r.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+        return {ok:r.ok,status:r.status,data};
+      },
+      args:[url,method,body]
+    });
+
+    if (!result) throw new Error("پاسخی از تب فعال دریافت نشد.");
+    if (!result.ok) {
+      const detail = typeof result.data === "string"
+        ? result.data
+        : JSON.stringify(result.data ?? {});
+      const err = new Error("HTTP " + result.status + (detail ? " - " + detail.slice(0,400) : ""));
+      err.status = result.status;
+      err.data = result.data;
+      throw err;
+    }
+    return result.data;
+  }
+
+  function status(msg, kind="info") {
+    const el = $("#commerceStatus", root);
     if (!el) return;
-    el.className = "commerce-status " + (kind || "info");
+    el.className = "gyc-status " + kind;
     el.textContent = msg;
   }
-  function setRaw(id, data) {
-    const el = qs("#" + id, root);
-    if (el) el.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+
+  function raw(id, value) {
+    const el = $("#" + id, root);
+    if (!el) return;
+    el.textContent = typeof value === "string" ? value : JSON.stringify(value,null,2);
   }
-  function busy(btn, on, text) {
+
+  function busy(btn, on, label="در حال انجام...") {
     if (!btn) return;
     if (on) {
       btn.dataset.oldText = btn.textContent;
       btn.disabled = true;
-      btn.textContent = text || "در حال انجام...";
+      btn.textContent = label;
     } else {
       btn.disabled = false;
       btn.textContent = btn.dataset.oldText || btn.textContent;
     }
   }
+
   function saveConfig() {
-    qsa("[data-api-key]", root).forEach(input => cfg[input.dataset.apiKey] = input.value.trim());
-    chrome.storage.local.set({[STORE_KEY]: cfg}, () => status("مسیرهای API ذخیره شدند.", "ok"));
+    $$("[data-api-key]", root).forEach(input => {
+      cfg[input.dataset.apiKey] = input.value.trim();
+    });
+    chrome.storage.local.set({[STORE_KEY]:cfg}, () => {
+      refreshAvailability();
+      status("تنظیمات API ذخیره شد.","ok");
+    });
   }
+
   function resetConfig() {
-    cfg = Object.assign({}, DEFAULTS);
-    chrome.storage.local.set({[STORE_KEY]: cfg}, fillConfig);
-    status("مسیرهای پیش‌فرض بازنشانی شدند.", "ok");
+    cfg = {...DEFAULTS};
+    chrome.storage.local.set({[STORE_KEY]:cfg}, () => {
+      fillConfig();
+      refreshAvailability();
+      status("مسیرهای تأییدشده بازنشانی شدند.","ok");
+    });
   }
+
   function fillConfig() {
-    qsa("[data-api-key]", root).forEach(input => input.value = cfg[input.dataset.apiKey] || "");
+    $$("[data-api-key]",root).forEach(input => {
+      input.value = cfg[input.dataset.apiKey] || "";
+    });
   }
+
+  function refreshAvailability() {
+    const map = {
+      couponLoad:"couponList",
+      couponCreate:"couponCreate",
+      couponUpdate:"couponUpdate",
+      couponDelete:"couponDelete",
+      productLoad:"productList",
+      priceUpdate:"productPriceUpdate"
+    };
+    for (const [id,key] of Object.entries(map)) {
+      const btn = $("#" + id,root);
+      if (btn) {
+        btn.disabled = !String(cfg[key] || "").trim();
+        btn.title = btn.disabled ? "Endpoint مدیریتی هنوز پیدا/تنظیم نشده است." : "";
+      }
+    }
+  }
+
+  async function validateDiscount(btn) {
+    const code = $("#discountCheckCode",root).value.trim();
+    if (!code) return status("کد تخفیف را وارد کنید.","bad");
+
+    busy(btn,true,"بررسی...");
+    try {
+      const data = await pageRequest(resolveUrl(cfg.discountValidate), "POST", {code});
+      raw("discountCheckRaw",data);
+      status("پاسخ endpoint واقعی تخفیف دریافت شد.","ok");
+    } catch (e) {
+      raw("discountCheckRaw",e.data ?? e.message);
+      if (e.status === 400) status("کد تخفیف توسط سرور رد شد.","bad");
+      else status("بررسی کد ناموفق: " + e.message,"bad");
+    } finally {
+      busy(btn,false);
+    }
+  }
+
+  async function readCart(btn) {
+    busy(btn,true,"دریافت...");
+    try {
+      const data = await pageRequest(resolveUrl(cfg.cartRead),"GET",null);
+      raw("cartRaw",data);
+      status("سبد فعال از endpoint واقعی خوانده شد.","ok");
+    } catch (e) {
+      raw("cartRaw",e.data ?? e.message);
+      status("خواندن سبد ناموفق: " + e.message,"bad");
+    } finally {
+      busy(btn,false);
+    }
+  }
+
+  function listFrom(data, keys) {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== "object") return [];
+    for (const k of keys) if (Array.isArray(data[k])) return data[k];
+    if (data.data && typeof data.data === "object") {
+      if (Array.isArray(data.data)) return data.data;
+      for (const k of keys) if (Array.isArray(data.data[k])) return data.data[k];
+    }
+    return [];
+  }
+
+  function couponId(x) {
+    return x?.id || x?.couponId || x?.coupon_id || x?.uuid || x?.code || "";
+  }
+
+  function couponCode(x) {
+    return x?.code || x?.coupon || x?.name || x?.title || "(بدون کد)";
+  }
+
   function renderCoupons() {
-    const list = qs("#commerceCouponList", root);
+    const list = $("#commerceCouponList",root);
     if (!list) return;
     if (!coupons.length) {
-      list.innerHTML = '<div class="commerce-note">موردی دریافت نشده است.</div>';
+      list.innerHTML = '<div class="gyc-note">موردی دریافت نشده است.</div>';
       return;
     }
     list.innerHTML = coupons.map(x => {
       const id = couponId(x);
       const value = x.value ?? x.amount ?? x.percent ?? x.discount ?? "";
       const type = x.type ?? x.discountType ?? x.discount_type ?? "";
-      return '<button type="button" class="commerce-row" data-id="' + esc(id) + '">' +
+      return '<button type="button" class="gyc-row" data-id="' + esc(id) + '">' +
         '<b>' + esc(couponCode(x)) + '</b><span>' + esc(type) + " " + esc(value) + "</span></button>";
     }).join("");
-    qsa(".commerce-row", list).forEach(btn => btn.addEventListener("click", () => selectCoupon(btn.dataset.id)));
+    $$(".gyc-row",list).forEach(btn => btn.addEventListener("click",() => selectCoupon(btn.dataset.id)));
   }
+
   function selectCoupon(id) {
     const x = coupons.find(v => String(couponId(v)) === String(id));
     if (!x) return;
-    qs("#couponId", root).value = couponId(x) || "";
-    qs("#couponCode", root).value = couponCode(x) === "(بدون کد)" ? "" : couponCode(x);
-    qs("#couponType", root).value = x.type || x.discountType || x.discount_type || "percent";
-    qs("#couponValue", root).value = x.value ?? x.amount ?? x.percent ?? x.discount ?? "";
-    qs("#couponMaxUses", root).value = x.maxUses ?? x.max_uses ?? x.usageLimit ?? "";
-    qs("#couponActive", root).checked = x.active !== false && x.enabled !== false;
+    $("#couponId",root).value = couponId(x);
+    $("#couponCode",root).value = couponCode(x) === "(بدون کد)" ? "" : couponCode(x);
+    $("#couponType",root).value = x.type || x.discountType || x.discount_type || "percent";
+    $("#couponValue",root).value = x.value ?? x.amount ?? x.percent ?? x.discount ?? "";
+    $("#couponMaxUses",root).value = x.maxUses ?? x.max_uses ?? x.usageLimit ?? "";
+    $("#couponActive",root).checked = x.active !== false && x.enabled !== false;
   }
+
   function couponPayload() {
-    const max = qs("#couponMaxUses", root).value.trim();
-    const payload = {
-      code: qs("#couponCode", root).value.trim(),
-      type: qs("#couponType", root).value,
-      value: Number(qs("#couponValue", root).value),
-      maxUses: max === "" ? null : Number(max),
-      active: qs("#couponActive", root).checked
+    const code = $("#couponCode",root).value.trim();
+    const value = Number($("#couponValue",root).value);
+    const maxRaw = $("#couponMaxUses",root).value.trim();
+
+    if (!code) throw new Error("Code الزامی است.");
+    if (!Number.isFinite(value) || value < 0) throw new Error("Value معتبر نیست.");
+    const type = $("#couponType",root).value;
+    if (type === "percent" && value > 100) throw new Error("درصد نمی‌تواند بیشتر از 100 باشد.");
+
+    return {
+      code,
+      type,
+      value,
+      maxUses:maxRaw === "" ? null : Number(maxRaw),
+      active:$("#couponActive",root).checked
     };
-    if (!payload.code) throw new Error("کد تخفیف الزامی است.");
-    if (!Number.isFinite(payload.value) || payload.value < 0) throw new Error("مقدار تخفیف معتبر نیست.");
-    if (payload.type === "percent" && payload.value > 100) throw new Error("درصد نمی‌تواند بیشتر از 100 باشد.");
-    return payload;
   }
+
   async function loadCoupons(btn) {
-    busy(btn, true, "دریافت...");
+    busy(btn,true,"دریافت...");
     try {
-      const data = await request(cfg.couponList, "GET");
-      coupons = arrayOf(data, ["coupons", "items", "results"]);
+      const data = await adminRequest(cfg.couponList,"GET");
+      coupons = listFrom(data,["coupons","items","results"]);
       renderCoupons();
-      setRaw("couponRaw", data);
-      status("API کد تخفیف فعال است.", "ok");
+      raw("couponRaw",data);
+      status("فهرست Coupon از API مدیریتی دریافت شد.","ok");
     } catch (e) {
-      coupons = [];
-      renderCoupons();
-      setRaw("couponRaw", e.message);
-      status("API کد تخفیف در دسترس نیست: " + e.message, "bad");
-    } finally { busy(btn, false); }
+      raw("couponRaw",e.data ?? e.message);
+      status("خواندن Coupon ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
   }
+
   async function createCoupon(btn) {
     try {
+      if (!cfg.couponCreate) throw new Error("Endpoint ساخت Coupon هنوز تنظیم نشده است.");
       const payload = couponPayload();
       if (!confirm("کد تخفیف " + payload.code + " ساخته شود؟")) return;
-      busy(btn, true, "ساخت...");
-      const data = await request(cfg.couponCreate, "POST", payload);
-      setRaw("couponRaw", data);
-      status("کد تخفیف ساخته شد.", "ok");
-      await loadCoupons(null);
-    } catch (e) { status("ساخت ناموفق: " + e.message, "bad"); }
-    finally { busy(btn, false); }
+      busy(btn,true,"ساخت...");
+      const data = await adminRequest(cfg.couponCreate,"POST",payload);
+      raw("couponRaw",data);
+      status("درخواست ساخت Coupon موفق بود.","ok");
+    } catch (e) {
+      raw("couponRaw",e.data ?? e.message);
+      status("ساخت Coupon ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
   }
+
   async function updateCoupon(btn) {
     try {
-      const id = qs("#couponId", root).value.trim();
-      if (!id) throw new Error("شناسه کد تخفیف لازم است.");
+      if (!cfg.couponUpdate) throw new Error("Endpoint ویرایش Coupon هنوز تنظیم نشده است.");
+      const id = $("#couponId",root).value.trim();
+      if (!id) throw new Error("ID الزامی است.");
       const payload = couponPayload();
-      if (!confirm("کد تخفیف " + id + " ویرایش شود؟")) return;
-      busy(btn, true, "ویرایش...");
-      const data = await request(cfg.couponUpdate, "PATCH", payload, {id});
-      setRaw("couponRaw", data);
-      status("کد تخفیف ویرایش شد.", "ok");
-      await loadCoupons(null);
-    } catch (e) { status("ویرایش ناموفق: " + e.message, "bad"); }
-    finally { busy(btn, false); }
+      if (!confirm("Coupon " + id + " ویرایش شود؟")) return;
+      busy(btn,true,"ویرایش...");
+      const data = await adminRequest(cfg.couponUpdate,"PATCH",payload,{id});
+      raw("couponRaw",data);
+      status("درخواست ویرایش Coupon موفق بود.","ok");
+    } catch (e) {
+      raw("couponRaw",e.data ?? e.message);
+      status("ویرایش Coupon ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
   }
+
   async function deleteCoupon(btn) {
     try {
-      const id = qs("#couponId", root).value.trim();
-      if (!id) throw new Error("شناسه کد تخفیف لازم است.");
-      if (!confirm("کد تخفیف " + id + " حذف شود؟")) return;
-      busy(btn, true, "حذف...");
-      const data = await request(cfg.couponDelete, "DELETE", null, {id});
-      setRaw("couponRaw", data);
-      status("کد تخفیف حذف شد.", "ok");
-      await loadCoupons(null);
-    } catch (e) { status("حذف ناموفق: " + e.message, "bad"); }
-    finally { busy(btn, false); }
-  }
-  async function loadProducts(btn) {
-    busy(btn, true, "دریافت...");
-    try {
-      const data = await request(cfg.productList, "GET");
-      setRaw("productRaw", data);
-      status("API محصول/قیمت فعال است.", "ok");
+      if (!cfg.couponDelete) throw new Error("Endpoint حذف Coupon هنوز تنظیم نشده است.");
+      const id = $("#couponId",root).value.trim();
+      if (!id) throw new Error("ID الزامی است.");
+      if (!confirm("Coupon " + id + " حذف شود؟")) return;
+      busy(btn,true,"حذف...");
+      const data = await adminRequest(cfg.couponDelete,"DELETE",null,{id});
+      raw("couponRaw",data);
+      status("درخواست حذف Coupon موفق بود.","ok");
     } catch (e) {
-      setRaw("productRaw", e.message);
-      status("API محصول/قیمت در دسترس نیست: " + e.message, "bad");
-    } finally { busy(btn, false); }
+      raw("couponRaw",e.data ?? e.message);
+      status("حذف Coupon ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
   }
+
+  async function loadProducts(btn) {
+    busy(btn,true,"دریافت...");
+    try {
+      const data = await adminRequest(cfg.productList,"GET");
+      raw("productRaw",data);
+      status("Product Admin API پاسخ داد.","ok");
+    } catch (e) {
+      raw("productRaw",e.data ?? e.message);
+      status("Product Admin API ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
+  }
+
   async function updatePrice(btn) {
     try {
-      const id = qs("#productId", root).value.trim();
-      const price = Number(qs("#productPrice", root).value);
+      if (!cfg.productPriceUpdate) throw new Error("Endpoint مدیریتی تغییر قیمت هنوز تنظیم نشده است.");
+      const id = $("#productId",root).value.trim();
+      const price = Number($("#productPrice",root).value);
       if (!id) throw new Error("Product ID الزامی است.");
       if (!Number.isFinite(price) || price < 0) throw new Error("قیمت معتبر نیست.");
-      const body = {
+
+      const payload = {
         price,
-        currency: qs("#productCurrency", root).value.trim() || "IRR",
-        variantId: qs("#variantId", root).value.trim() || null,
-        durationCode: qs("#durationCode", root).value.trim() || null
+        currency:$("#productCurrency",root).value.trim() || "IRR",
+        variantId:$("#variantId",root).value.trim() || null,
+        durationCode:$("#durationCode",root).value.trim() || null
       };
-      if (!confirm("قیمت Catalog برای " + id + " به " + price + " تغییر کند؟")) return;
-      busy(btn, true, "ثبت...");
-      const data = await request(cfg.productPriceUpdate, "PATCH", body, {id});
-      setRaw("priceRaw", data);
-      status("درخواست ویرایش قیمت ثبت شد.", "ok");
-    } catch (e) { status("ویرایش قیمت ناموفق: " + e.message, "bad"); }
-    finally { busy(btn, false); }
+
+      if (!confirm("قیمت Catalog برای " + id + " تغییر کند؟")) return;
+      busy(btn,true,"ثبت...");
+      const data = await adminRequest(cfg.productPriceUpdate,"PATCH",payload,{id});
+      raw("priceRaw",data);
+      status("درخواست مدیریتی تغییر قیمت موفق بود.","ok");
+    } catch (e) {
+      raw("priceRaw",e.data ?? e.message);
+      status("تغییر قیمت ناموفق: " + e.message,"bad");
+    } finally { busy(btn,false); }
   }
-  async function probe(btn) {
-    busy(btn, true, "بررسی...");
-    const out = [];
-    try { await request(cfg.couponList, "GET"); out.push("Coupon API: OK"); }
-    catch (e) { out.push("Coupon API: " + e.message); }
-    try { await request(cfg.productList, "GET"); out.push("Product API: OK"); }
-    catch (e) { out.push("Product API: " + e.message); }
-    setRaw("probeRaw", out.join("\n"));
-    busy(btn, false);
-  }
+
   function injectStyle() {
-    if (qs("#commerceAdminStyle")) return;
+    if ($("#commerceAdminStyle")) return;
     const s = document.createElement("style");
     s.id = "commerceAdminStyle";
     s.textContent =
-      ".commerce-open{width:100%;margin-top:10px;padding:10px;border:0;border-radius:10px;background:#4f46e5;color:#fff;font:700 12px inherit;cursor:pointer}" +
-      ".commerce-backdrop{position:fixed;inset:0;z-index:2147483600;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px}" +
-      ".commerce-modal{direction:rtl;width:min(720px,100%);max-height:calc(100vh - 20px);overflow:hidden;background:#111827;color:#f8fafc;border:1px solid #334155;border-radius:16px;font-family:Vazirmatn,inherit}" +
-      ".commerce-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #334155}.commerce-head b{font-size:15px}.commerce-close{background:#334155;color:white;border:0;border-radius:8px;width:32px;height:32px;cursor:pointer}" +
-      ".commerce-status{margin:10px 12px 0;padding:8px 10px;border-radius:8px;background:#1e3a8a;font-size:11px}.commerce-status.ok{background:#065f46}.commerce-status.bad{background:#7f1d1d}" +
-      ".commerce-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:10px 12px}.commerce-tab{border:1px solid #334155;background:#1e293b;color:#cbd5e1;border-radius:8px;padding:8px;font:700 11px inherit;cursor:pointer}.commerce-tab.active{background:#334155;color:#fff}" +
-      ".commerce-body{padding:12px;overflow:auto;max-height:calc(100vh - 155px)}.commerce-pane{display:none}.commerce-pane.active{display:block}.commerce-card{background:#0f172a;border:1px solid #273449;border-radius:12px;padding:11px;margin-bottom:10px}.commerce-card h3{font-size:12px;margin:0 0 9px}.commerce-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.commerce-field{display:flex;flex-direction:column;gap:4px}.commerce-field label{font-size:10px;color:#a5b4fc}.commerce-field input,.commerce-field select{border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;font:11px inherit;box-sizing:border-box;width:100%}" +
-      ".commerce-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.commerce-btn{width:auto!important;flex:1 1 92px;min-width:0;border:0;border-radius:8px;padding:8px 10px;background:#334155;color:white;font:700 11px inherit;cursor:pointer}.commerce-btn.primary{background:#2563eb}.commerce-btn.success{background:#059669}.commerce-btn.danger{background:#dc2626}.commerce-btn.warn{background:#d97706}.commerce-btn:disabled{opacity:.55}" +
-      ".commerce-list{display:flex;flex-direction:column;gap:6px;margin-top:9px}.commerce-row{width:100%!important;text-align:right;border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}.commerce-row span{color:#94a3b8;font-size:10px}.commerce-field input[type=checkbox]{width:auto!important}.commerce-note{font-size:10px;color:#94a3b8;line-height:1.7}.commerce-json{direction:ltr;text-align:left;white-space:pre-wrap;max-height:180px;overflow:auto;background:#020617;border:1px solid #263247;border-radius:8px;padding:8px;font:10px monospace;color:#cbd5e1}" +
-      "@media(max-width:560px){.commerce-grid{grid-template-columns:1fr}}";
+      "#"+ROOT_ID+" *{box-sizing:border-box}" +
+      ".gyc-backdrop{position:fixed;inset:0;z-index:2147483600;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:12px}" +
+      ".gyc-backdrop[hidden]{display:none!important}" +
+      ".gyc-modal{direction:rtl;width:min(390px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:hidden;background:#111827;color:#f8fafc;border:1px solid #334155;border-radius:14px;font-family:Vazirmatn,inherit;box-shadow:0 18px 45px rgba(0,0,0,.45)}" +
+      ".gyc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #334155}.gyc-head b{font-size:14px}.gyc-close{width:32px!important;min-width:32px!important;height:32px!important;padding:0!important;flex:0 0 32px;border:0;border-radius:8px;background:#334155;color:#fff;cursor:pointer}" +
+      ".gyc-status{margin:10px 12px 0;padding:8px 10px;border-radius:8px;background:#1e3a8a;font-size:11px}.gyc-status.ok{background:#065f46}.gyc-status.bad{background:#7f1d1d}" +
+      ".gyc-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:10px 12px}.gyc-tab{width:auto!important;border:1px solid #334155;background:#1e293b;color:#cbd5e1;border-radius:8px;padding:8px;font:700 11px inherit;cursor:pointer}.gyc-tab.active{background:#334155;color:#fff}" +
+      ".gyc-body{padding:12px;overflow:auto;max-height:calc(100dvh - 155px)}.gyc-pane{display:none}.gyc-pane.active{display:block}" +
+      ".gyc-card{background:#0f172a;border:1px solid #273449;border-radius:12px;padding:11px;margin-bottom:10px}.gyc-card h3{font-size:12px;margin:0 0 8px}.gyc-note{font-size:10px;line-height:1.75;color:#94a3b8}.gyc-verified{color:#86efac}" +
+      ".gyc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.gyc-field{display:flex;flex-direction:column;gap:4px}.gyc-field label{font-size:10px;color:#a5b4fc}.gyc-field input,.gyc-field select{width:100%!important;border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;font:11px inherit}.gyc-field input[type=checkbox]{width:auto!important}" +
+      ".gyc-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.gyc-btn{width:auto!important;flex:1 1 92px;min-width:0;border:0;border-radius:8px;padding:8px 10px;background:#334155;color:#fff;font:700 11px inherit;cursor:pointer}.gyc-btn.primary{background:#2563eb}.gyc-btn.success{background:#059669}.gyc-btn.danger{background:#dc2626}.gyc-btn.warn{background:#d97706}.gyc-btn:disabled{opacity:.38;cursor:not-allowed}" +
+      ".gyc-list{display:flex;flex-direction:column;gap:6px;margin-top:9px}.gyc-row{width:100%!important;text-align:right;border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}.gyc-row span{font-size:10px;color:#94a3b8}" +
+      ".gyc-json{direction:ltr;text-align:left;white-space:pre-wrap;word-break:break-word;max-height:190px;overflow:auto;background:#020617;border:1px solid #263247;border-radius:8px;padding:8px;font:10px monospace;color:#cbd5e1}" +
+      "@media(max-width:560px){.gyc-grid{grid-template-columns:1fr}}";
     document.head.appendChild(s);
   }
+
   function configFields() {
-    return Object.keys(DEFAULTS).map(k =>
-      '<div class="commerce-field"><label>' + esc(k) + '</label><input data-api-key="' + esc(k) + '"></div>'
+    const labels = {
+      discountValidate:"discountValidate (verified)",
+      cartRead:"cartRead (verified)",
+      couponList:"couponList (admin unknown)",
+      couponCreate:"couponCreate (admin unknown)",
+      couponUpdate:"couponUpdate (admin unknown)",
+      couponDelete:"couponDelete (admin unknown)",
+      productList:"productList (admin unknown)",
+      productPriceUpdate:"productPriceUpdate (admin unknown)"
+    };
+    return Object.keys(DEFAULTS).map(key =>
+      '<div class="gyc-field"><label>' + esc(labels[key]) + '</label><input data-api-key="' + esc(key) + '"></div>'
     ).join("");
   }
+
   function renderRoot() {
     root = document.createElement("div");
     root.id = ROOT_ID;
     root.innerHTML =
-      '<div class="commerce-backdrop" hidden><div class="commerce-modal">' +
-      '<div class="commerce-head"><div><b>مدیریت تخفیف و قیمت</b><div class="commerce-note">Backend Admin API</div></div><button class="commerce-close">×</button></div>' +
-      '<div id="commerceStatus" class="commerce-status">آماده</div>' +
-      '<div class="commerce-tabs"><button class="commerce-tab active" data-tab="coupon">کد تخفیف</button><button class="commerce-tab" data-tab="price">قیمت</button><button class="commerce-tab" data-tab="api">API</button></div>' +
-      '<div class="commerce-body">' +
-      '<section class="commerce-pane active" data-pane="coupon">' +
-      '<div class="commerce-card"><h3>کدهای تخفیف</h3><div class="commerce-actions"><button id="couponLoad" class="commerce-btn">دریافت فهرست</button></div><div id="commerceCouponList" class="commerce-list"><div class="commerce-note">هنوز دریافت نشده است.</div></div></div>' +
-      '<div class="commerce-card"><h3>ساخت / ویرایش</h3><div class="commerce-grid">' +
-      '<div class="commerce-field"><label>ID</label><input id="couponId"></div><div class="commerce-field"><label>Code</label><input id="couponCode"></div>' +
-      '<div class="commerce-field"><label>Type</label><select id="couponType"><option value="percent">percent</option><option value="fixed">fixed</option></select></div>' +
-      '<div class="commerce-field"><label>Value</label><input id="couponValue" type="number" min="0"></div>' +
-      '<div class="commerce-field"><label>Max uses</label><input id="couponMaxUses" type="number" min="0"></div>' +
-      '<div class="commerce-field"><label>Active</label><label><input id="couponActive" type="checkbox" checked> فعال</label></div></div>' +
-      '<div class="commerce-actions"><button id="couponCreate" class="commerce-btn success">ساخت</button><button id="couponUpdate" class="commerce-btn primary">ویرایش</button><button id="couponDelete" class="commerce-btn danger">حذف</button></div></div>' +
-      '<div class="commerce-card"><h3>Response</h3><pre id="couponRaw" class="commerce-json">—</pre></div></section>' +
-      '<section class="commerce-pane" data-pane="price">' +
-      '<div class="commerce-card"><h3>محصولات</h3><div class="commerce-actions"><button id="productLoad" class="commerce-btn">دریافت محصولات</button></div><pre id="productRaw" class="commerce-json">—</pre></div>' +
-      '<div class="commerce-card"><h3>ویرایش قیمت Catalog</h3><div class="commerce-note">فقط API مدیریتی Backend فراخوانی می‌شود؛ Checkout سمت مرورگر تغییر نمی‌کند.</div><div class="commerce-grid">' +
-      '<div class="commerce-field"><label>Product ID</label><input id="productId"></div><div class="commerce-field"><label>Variant ID</label><input id="variantId"></div>' +
-      '<div class="commerce-field"><label>Duration</label><input id="durationCode" placeholder="1m"></div><div class="commerce-field"><label>Currency</label><input id="productCurrency" value="IRR"></div>' +
-      '<div class="commerce-field"><label>Price</label><input id="productPrice" type="number" min="0"></div></div><div class="commerce-actions"><button id="priceUpdate" class="commerce-btn warn">ثبت قیمت</button></div><pre id="priceRaw" class="commerce-json">—</pre></div></section>' +
-      '<section class="commerce-pane" data-pane="api"><div class="commerce-card"><h3>Endpointها</h3><div class="commerce-note">مسیرها قابل تنظیم‌اند چون endpointهای Commerce در v4.6.2 وجود نداشتند.</div><div class="commerce-grid">' + configFields() + '</div>' +
-      '<div class="commerce-actions"><button id="apiSave" class="commerce-btn primary">ذخیره</button><button id="apiReset" class="commerce-btn">پیش‌فرض</button><button id="apiProbe" class="commerce-btn success">بررسی</button></div></div><div class="commerce-card"><pre id="probeRaw" class="commerce-json">—</pre></div></section>' +
+      '<div class="gyc-backdrop" hidden><div class="gyc-modal">' +
+      '<div class="gyc-head"><div><b>ابزار فروشگاه</b><div class="gyc-note">Verified storefront + optional Admin API</div></div><button class="gyc-close">×</button></div>' +
+      '<div id="commerceStatus" class="gyc-status">آماده</div>' +
+      '<div class="gyc-tabs"><button class="gyc-tab active" data-tab="coupon">تخفیف</button><button class="gyc-tab" data-tab="price">قیمت</button><button class="gyc-tab" data-tab="api">API</button></div>' +
+      '<div class="gyc-body">' +
+
+      '<section class="gyc-pane active" data-pane="coupon">' +
+      '<div class="gyc-card"><h3>اعتبارسنجی کد تخفیف <span class="gyc-verified">✓ تأییدشده</span></h3>' +
+      '<div class="gyc-note">Endpoint واقعی: POST /api/checkout/discount. این درخواست روی سبد فعال همان تب اجرا می‌شود.</div>' +
+      '<div class="gyc-grid"><div class="gyc-field"><label>Code</label><input id="discountCheckCode" placeholder="مثلاً CODE"></div></div>' +
+      '<div class="gyc-actions"><button id="discountCheck" class="gyc-btn success">بررسی کد</button></div><pre id="discountCheckRaw" class="gyc-json">—</pre></div>' +
+
+      '<div class="gyc-card"><h3>مدیریت Coupon <span class="gyc-note">(Admin endpoint هنوز نامشخص)</span></h3>' +
+      '<div class="gyc-actions"><button id="couponLoad" class="gyc-btn">فهرست</button></div><div id="commerceCouponList" class="gyc-list"><div class="gyc-note">برای فعال شدن، endpoint مدیریتی واقعی را در تب API وارد کنید.</div></div>' +
+      '<div class="gyc-grid"><div class="gyc-field"><label>ID</label><input id="couponId"></div><div class="gyc-field"><label>Code</label><input id="couponCode"></div>' +
+      '<div class="gyc-field"><label>Type</label><select id="couponType"><option value="percent">percent</option><option value="fixed">fixed</option></select></div><div class="gyc-field"><label>Value</label><input id="couponValue" type="number" min="0"></div>' +
+      '<div class="gyc-field"><label>Max uses</label><input id="couponMaxUses" type="number" min="0"></div><div class="gyc-field"><label>Active</label><label><input id="couponActive" type="checkbox" checked> فعال</label></div></div>' +
+      '<div class="gyc-actions"><button id="couponCreate" class="gyc-btn success">ساخت</button><button id="couponUpdate" class="gyc-btn primary">ویرایش</button><button id="couponDelete" class="gyc-btn danger">حذف</button></div>' +
+      '<pre id="couponRaw" class="gyc-json">—</pre></div></section>' +
+
+      '<section class="gyc-pane" data-pane="price">' +
+      '<div class="gyc-card"><h3>سبد فعال <span class="gyc-verified">✓ تأییدشده</span></h3><div class="gyc-note">GET /api/cart فقط وضعیت واقعی سبد و قیمت محاسبه‌شده توسط سرور را نمایش می‌دهد.</div>' +
+      '<div class="gyc-actions"><button id="cartLoad" class="gyc-btn success">خواندن سبد</button></div><pre id="cartRaw" class="gyc-json">—</pre></div>' +
+      '<div class="gyc-card"><h3>Product / Price Admin <span class="gyc-note">(endpoint هنوز نامشخص)</span></h3><div class="gyc-actions"><button id="productLoad" class="gyc-btn">دریافت محصولات</button></div><pre id="productRaw" class="gyc-json">—</pre>' +
+      '<div class="gyc-grid"><div class="gyc-field"><label>Product ID</label><input id="productId"></div><div class="gyc-field"><label>Variant ID</label><input id="variantId"></div><div class="gyc-field"><label>Duration</label><input id="durationCode" placeholder="1m"></div><div class="gyc-field"><label>Currency</label><input id="productCurrency" value="IRR"></div><div class="gyc-field"><label>Price</label><input id="productPrice" type="number" min="0"></div></div>' +
+      '<div class="gyc-actions"><button id="priceUpdate" class="gyc-btn warn">ثبت قیمت مدیریتی</button></div><pre id="priceRaw" class="gyc-json">—</pre></div></section>' +
+
+      '<section class="gyc-pane" data-pane="api"><div class="gyc-card"><h3>Endpointها</h3><div class="gyc-note">دو endpoint اول از Capture واقعی تأیید شده‌اند. بقیه عمداً خالی هستند تا درخواست 404 یا حدسی ارسال نشود.</div><div class="gyc-grid">' +
+      configFields() +
+      '</div><div class="gyc-actions"><button id="apiSave" class="gyc-btn primary">ذخیره</button><button id="apiReset" class="gyc-btn">بازنشانی</button></div></div></section>' +
+
       '</div></div></div>';
+
     document.body.appendChild(root);
 
-    qs(".commerce-close", root).addEventListener("click", close);
-    qs(".commerce-backdrop", root).addEventListener("click", e => { if (e.target.classList.contains("commerce-backdrop")) close(); });
-    qsa(".commerce-tab", root).forEach(tab => tab.addEventListener("click", () => {
-      qsa(".commerce-tab", root).forEach(x => x.classList.toggle("active", x === tab));
-      qsa(".commerce-pane", root).forEach(x => x.classList.toggle("active", x.dataset.pane === tab.dataset.tab));
+    $(".gyc-close",root).addEventListener("click",close);
+    $(".gyc-backdrop",root).addEventListener("click",e => {
+      if (e.target.classList.contains("gyc-backdrop")) close();
+    });
+
+    $$(".gyc-tab",root).forEach(tab => tab.addEventListener("click",() => {
+      $$(".gyc-tab",root).forEach(x => x.classList.toggle("active",x===tab));
+      $$(".gyc-pane",root).forEach(x => x.classList.toggle("active",x.dataset.pane===tab.dataset.tab));
     }));
-    qs("#couponLoad", root).addEventListener("click", e => loadCoupons(e.currentTarget));
-    qs("#couponCreate", root).addEventListener("click", e => createCoupon(e.currentTarget));
-    qs("#couponUpdate", root).addEventListener("click", e => updateCoupon(e.currentTarget));
-    qs("#couponDelete", root).addEventListener("click", e => deleteCoupon(e.currentTarget));
-    qs("#productLoad", root).addEventListener("click", e => loadProducts(e.currentTarget));
-    qs("#priceUpdate", root).addEventListener("click", e => updatePrice(e.currentTarget));
-    qs("#apiSave", root).addEventListener("click", saveConfig);
-    qs("#apiReset", root).addEventListener("click", resetConfig);
-    qs("#apiProbe", root).addEventListener("click", e => probe(e.currentTarget));
+
+    $("#discountCheck",root).addEventListener("click",e => validateDiscount(e.currentTarget));
+    $("#cartLoad",root).addEventListener("click",e => readCart(e.currentTarget));
+    $("#couponLoad",root).addEventListener("click",e => loadCoupons(e.currentTarget));
+    $("#couponCreate",root).addEventListener("click",e => createCoupon(e.currentTarget));
+    $("#couponUpdate",root).addEventListener("click",e => updateCoupon(e.currentTarget));
+    $("#couponDelete",root).addEventListener("click",e => deleteCoupon(e.currentTarget));
+    $("#productLoad",root).addEventListener("click",e => loadProducts(e.currentTarget));
+    $("#priceUpdate",root).addEventListener("click",e => updatePrice(e.currentTarget));
+    $("#apiSave",root).addEventListener("click",saveConfig);
+    $("#apiReset",root).addEventListener("click",resetConfig);
   }
-  function open() { fillConfig(); qs(".commerce-backdrop", root).hidden = false; }
-  function close() { qs(".commerce-backdrop", root).hidden = true; }
+
+  function open() {
+    fillConfig();
+    refreshAvailability();
+    $(".gyc-backdrop",root).hidden = false;
+  }
+
+  function close() {
+    $(".gyc-backdrop",root).hidden = true;
+  }
+
   function ensureToolsHost() {
-    const section = qs("#accupdator-section");
+    const section = $("#accupdator-section");
     if (!section) return null;
-    const content = qs(".accupdator-content", section) || qs("#accupdatorPanel", section);
+    const content = $(".accupdator-content",section) || $("#accupdatorPanel",section);
     if (!content) return null;
 
-    let card = qs("#gptyarCommerceToolsCard", section);
+    let card = $("#gptyarCommerceToolsCard",section);
     if (!card) {
       card = document.createElement("div");
       card.id = "gptyarCommerceToolsCard";
@@ -341,33 +536,40 @@
         '<div class="section-card-content"><div id="gptyarCommerceToolsButtons" class="accupdator-buttons"></div></div>';
       content.appendChild(card);
     }
-    return qs("#gptyarCommerceToolsButtons", card);
+    return $("#gptyarCommerceToolsButtons",card);
   }
+
   function ensureButton() {
     const target = ensureToolsHost();
     if (!target) return;
 
-    let btn = qs("#" + BTN_ID);
+    let btn = $("#" + BTN_ID);
     if (!btn) {
       btn = document.createElement("button");
       btn.id = BTN_ID;
-      btn.className = "accupdator-btn secondary-btn";
       btn.type = "button";
-      btn.textContent = "مدیریت تخفیف و قیمت";
-      btn.addEventListener("click", open);
+      btn.className = "accupdator-btn secondary-btn";
+      btn.textContent = "تخفیف و قیمت";
+      btn.addEventListener("click",open);
     }
     if (btn.parentElement !== target) target.appendChild(btn);
   }
+
   function init() {
     injectStyle();
-    chrome.storage.local.get([STORE_KEY], result => {
-      cfg = Object.assign({}, DEFAULTS, result && result[STORE_KEY] || {});
+    chrome.storage.local.get([STORE_KEY],result => {
+      cfg = {...DEFAULTS,...(result?.[STORE_KEY] || {})};
       renderRoot();
       fillConfig();
+      refreshAvailability();
       ensureButton();
-      new MutationObserver(ensureButton).observe(document.documentElement, {childList: true, subtree: true});
+      new MutationObserver(ensureButton).observe(document.documentElement,{childList:true,subtree:true});
     });
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init, {once: true});
-  else init();
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded",init,{once:true});
+  } else {
+    init();
+  }
 })();
