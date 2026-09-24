@@ -1,0 +1,1006 @@
+name: Fix unlimited subscriptions v4
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/fix-unlimited-v4.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Patch extension archive
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          ZIP = Path("v4.6.2.zip")
+          TMP = Path("v4.6.2.zip.tmp")
+
+          ACC_MARKERS = [
+              "/* === Unlimited subscription option patch (OpenAI-assisted) === */",
+              "/* === GPTYAR unlimited API null fix v2 === */",
+              "/* === GPTYAR unlimited subscription v3 === */",
+              "/* === GPTYAR unlimited subscription v4 === */",
+          ]
+          POPUP_MARKER = "/* === GPTYAR unlimited display v4 === */"
+          CSS_MARKERS = [
+              "/* === GPTYAR unlimited subscription UI v3 === */",
+              "/* === GPTYAR unlimited subscription UI v4 === */",
+          ]
+
+          acc_patch = r'''
+          /* === GPTYAR unlimited subscription v4 === */
+          ;(() => {
+            const UNLIMITED_ID = 'newUserUnlimited';
+            const UNLIMITED_ROW_ID = 'newUserUnlimitedRow';
+
+            // The backend currently requires expiresAt to be a non-null value.
+            // A far-future date is therefore used as the server-side sentinel
+            // and normalized to "نامحدود" everywhere in the extension UI.
+            const UNLIMITED_EXPIRES_AT = '2099-12-31T23:59:59.999Z';
+            const UNLIMITED_YEAR = 2099;
+
+            const getExpiryElement = manager =>
+              DOMManager.getElement(manager.ELEMENT_IDS.NEW_USER_EXPIRY);
+
+            const getCalendarContainer = manager => {
+              const calendar =
+                DOMManager.getElement(manager.ELEMENT_IDS.NEW_USER_CALENDAR);
+
+              return calendar
+                ? calendar.closest('.subscriber-calendar-container')
+                : null;
+            };
+
+            const isUnlimitedDate = value => {
+              if (!value) return false;
+
+              const date =
+                value instanceof Date
+                  ? value
+                  : new Date(value);
+
+              return (
+                !Number.isNaN(date.getTime()) &&
+                date.getUTCFullYear() >= UNLIMITED_YEAR
+              );
+            };
+
+            const isUnlimitedSelected = () => {
+              const input =
+                document.getElementById(UNLIMITED_ID);
+
+              return Boolean(
+                input &&
+                input.checked
+              );
+            };
+
+            const extractApiMessage = error => {
+              const raw =
+                error && error.message
+                  ? String(error.message)
+                  : String(error || 'خطای نامشخص');
+
+              const jsonMatch =
+                raw.match(/(\{[\s\S]*\})\s*$/);
+
+              if (jsonMatch) {
+                try {
+                  const parsed =
+                    JSON.parse(jsonMatch[1]);
+
+                  const message =
+                    parsed.message ||
+                    parsed.error ||
+                    parsed.detail ||
+                    parsed.errors;
+
+                  if (message) {
+                    return typeof message === 'string'
+                      ? message
+                      : JSON.stringify(message);
+                  }
+                } catch (_) {}
+              }
+
+              return raw
+                .replace(
+                  /^API request failed\s*\([^)]*\):?\s*/i,
+                  ''
+                )
+                .trim();
+            };
+
+            const syncUnlimitedUI = manager => {
+              const unlimited =
+                isUnlimitedSelected();
+
+              const expiry =
+                getExpiryElement(manager);
+
+              const calendarContainer =
+                getCalendarContainer(manager);
+
+              if (calendarContainer) {
+                calendarContainer.classList.toggle(
+                  'new-user-calendar-hidden',
+                  unlimited
+                );
+              }
+
+              if (!expiry) return;
+
+              expiry.classList.toggle(
+                'new-user-expiry-unlimited',
+                unlimited
+              );
+
+              if (unlimited) {
+                expiry.textContent = 'نامحدود';
+                expiry.classList.add('selected');
+                return;
+              }
+
+              if (manager._newUserExpiryDate) {
+                expiry.textContent =
+                  manager._formatPersianDate(
+                    manager._newUserExpiryDate
+                  );
+
+                expiry.classList.add('selected');
+              } else {
+                expiry.textContent =
+                  'انتخاب نشده';
+
+                expiry.classList.remove('selected');
+              }
+            };
+
+            const ensureUnlimitedControl = manager => {
+              let input =
+                document.getElementById(
+                  UNLIMITED_ID
+                );
+
+              if (input) {
+                return input;
+              }
+
+              const expiry =
+                getExpiryElement(manager);
+
+              const expiryRow =
+                expiry
+                  ? expiry.closest('.detail-row')
+                  : null;
+
+              if (!expiryRow) {
+                return null;
+              }
+
+              const row =
+                document.createElement('div');
+
+              row.id =
+                UNLIMITED_ROW_ID;
+
+              row.className =
+                'detail-row new-user-unlimited-row';
+
+              row.innerHTML = `
+                <div class="new-user-unlimited-copy">
+                  <span class="detail-label">
+                    اشتراک نامحدود
+                  </span>
+                  <span class="new-user-unlimited-hint">
+                    بدون تاریخ پایان
+                  </span>
+                </div>
+
+                <label
+                  class="new-user-unlimited-switch"
+                  title="فعال یا غیرفعال کردن اشتراک نامحدود"
+                >
+                  <input
+                    id="${UNLIMITED_ID}"
+                    type="checkbox"
+                    aria-label="اشتراک نامحدود"
+                  >
+                  <span class="new-user-unlimited-slider">
+                    <span class="new-user-unlimited-knob"></span>
+                  </span>
+                </label>
+              `;
+
+              expiryRow.insertAdjacentElement(
+                'afterend',
+                row
+              );
+
+              input =
+                document.getElementById(
+                  UNLIMITED_ID
+                );
+
+              if (input) {
+                input.addEventListener(
+                  'change',
+                  () => {
+                    syncUnlimitedUI(manager);
+                    manager
+                      ._updateNewUserCreateButtonState();
+                  }
+                );
+              }
+
+              return input;
+            };
+
+            const createUnlimitedUser =
+              async name => {
+
+                const url =
+                  CONFIG.API_SERVER +
+                  '/accupdator/subscribers/create';
+
+                return await AccupdatorAPI._request(
+                  url,
+                  'POST',
+                  {
+                    name,
+                    expiresAt:
+                      UNLIMITED_EXPIRES_AT
+                  }
+                );
+              };
+
+            const originalSetup =
+              AccupdatorManager
+                ._setupNewUserMenuEventListeners;
+
+            AccupdatorManager
+              ._setupNewUserMenuEventListeners =
+              function () {
+
+                originalSetup.call(this);
+
+                ensureUnlimitedControl(this);
+                syncUnlimitedUI(this);
+              };
+
+            const originalReset =
+              AccupdatorManager
+                ._resetNewUserForm;
+
+            AccupdatorManager
+              ._resetNewUserForm =
+              function () {
+
+                originalReset.call(this);
+
+                const input =
+                  ensureUnlimitedControl(this);
+
+                if (input) {
+                  input.checked = false;
+                }
+
+                syncUnlimitedUI(this);
+
+                this
+                  ._updateNewUserCreateButtonState();
+              };
+
+            AccupdatorManager
+              ._updateNewUserCreateButtonState =
+              function () {
+
+                const nameInput =
+                  DOMManager.getElement(
+                    this.ELEMENT_IDS
+                      .NEW_USER_NAME_INPUT
+                  );
+
+                const createButton =
+                  DOMManager.getElement(
+                    this.ELEMENT_IDS
+                      .NEW_USER_CREATE_BTN
+                  );
+
+                if (
+                  !nameInput ||
+                  !createButton
+                ) {
+                  return;
+                }
+
+                const hasName =
+                  nameInput.value
+                    .trim()
+                    .length > 0;
+
+                const hasExpiry =
+                  this._newUserExpiryDate !== null;
+
+                createButton.disabled =
+                  !(
+                    hasName &&
+                    (
+                      isUnlimitedSelected() ||
+                      hasExpiry
+                    )
+                  );
+              };
+
+            AccupdatorManager
+              ._handleCreateNewUser =
+              async function () {
+
+                const nameInput =
+                  DOMManager.getElement(
+                    this.ELEMENT_IDS
+                      .NEW_USER_NAME_INPUT
+                  );
+
+                const createButton =
+                  DOMManager.getElement(
+                    this.ELEMENT_IDS
+                      .NEW_USER_CREATE_BTN
+                  );
+
+                if (!nameInput) {
+                  return;
+                }
+
+                const name =
+                  nameInput.value.trim();
+
+                if (!name) {
+                  return;
+                }
+
+                const unlimited =
+                  isUnlimitedSelected();
+
+                if (
+                  !unlimited &&
+                  !this._newUserExpiryDate
+                ) {
+                  return;
+                }
+
+                try {
+                  this._setButtonLoading(
+                    createButton,
+                    true
+                  );
+
+                  if (unlimited) {
+                    await createUnlimitedUser(name);
+
+                    NotificationManager
+                      .showSuccess(
+                        'کاربر نامحدود با موفقیت ایجاد شد'
+                      );
+
+                    this._hideNewUserMenu();
+
+                    await this._loadSubscribers();
+                    await this.refreshAccountInfo();
+
+                    return;
+                  }
+
+                  const createdUser =
+                    await this.createNewUser(
+                      name,
+                      this._newUserExpiryDate
+                    );
+
+                  NotificationManager
+                    .showSuccess(
+                      'کاربر جدید با موفقیت ایجاد شد'
+                    );
+
+                  const menu =
+                    DOMManager.getElement(
+                      this.ELEMENT_IDS
+                        .NEW_USER_MENU
+                    );
+
+                  if (menu) {
+                    menu.classList.remove(
+                      'active'
+                    );
+                  }
+
+                  this._showCreatedUserDetails(
+                    createdUser
+                  );
+
+                  await this._loadSubscribers();
+                  await this.refreshAccountInfo();
+
+                } catch (error) {
+                  const message =
+                    extractApiMessage(error);
+
+                  globalThis
+                    .__GPTYAR_DEV_LOG__?.(
+                      '[AccupdatorManager] Error creating new user:',
+                      error
+                    );
+
+                  NotificationManager.showError(
+                    'خطا در ایجاد کاربر: ' +
+                    (
+                      message.length > 160
+                        ? message.slice(0, 160) + '…'
+                        : message
+                    )
+                  );
+                } finally {
+                  this._setButtonLoading(
+                    createButton,
+                    false
+                  );
+
+                  this
+                    ._updateNewUserCreateButtonState();
+                }
+              };
+
+            const originalFetchSubscribersList =
+              AccupdatorManager
+                .fetchSubscribersList;
+
+            AccupdatorManager
+              .fetchSubscribersList =
+              async function () {
+
+                const items =
+                  await originalFetchSubscribersList
+                    .call(this);
+
+                return items.map(item => ({
+                  ...item,
+                  isUnlimited:
+                    isUnlimitedDate(
+                      item.expiryDate
+                    )
+                }));
+              };
+
+            const originalGenerateSubscriberItemHTML =
+              AccupdatorManager
+                ._generateSubscriberItemHTML;
+
+            AccupdatorManager
+              ._generateSubscriberItemHTML =
+              function (item) {
+
+                const html =
+                  originalGenerateSubscriberItemHTML
+                    .call(this, item);
+
+                if (!item?.isUnlimited) {
+                  return html;
+                }
+
+                return html.replace(
+                  String(item.remainingDays) +
+                    ' روز',
+                  'نامحدود'
+                );
+              };
+
+            const originalFetchSubscriberDetails =
+              AccupdatorManager
+                .fetchSubscriberDetails;
+
+            AccupdatorManager
+              .fetchSubscriberDetails =
+              async function (token) {
+
+                const item =
+                  Array.isArray(
+                    this._subscribersList
+                  )
+                    ? this._subscribersList
+                        .find(
+                          entry =>
+                            entry.token === token
+                        )
+                    : null;
+
+                if (
+                  item &&
+                  item.isUnlimited
+                ) {
+                  return {
+                    ...item
+                  };
+                }
+
+                return await originalFetchSubscriberDetails
+                  .call(this, token);
+              };
+
+            const originalUpdateSubscriberDetailsContent =
+              AccupdatorManager
+                ._updateSubscriberDetailsContent;
+
+            AccupdatorManager
+              ._updateSubscriberDetailsContent =
+              function (item) {
+
+                originalUpdateSubscriberDetailsContent
+                  .call(this, item);
+
+                if (
+                  !item ||
+                  !(
+                    item.isUnlimited ||
+                    isUnlimitedDate(
+                      item.expiryDate
+                    )
+                  )
+                ) {
+                  return;
+                }
+
+                const expiry =
+                  DOMManager.getElement(
+                    this.ELEMENT_IDS
+                      .SUBSCRIBER_DETAILS_EXPIRY
+                  );
+
+                if (expiry) {
+                  expiry.textContent =
+                    'نامحدود';
+
+                  expiry.classList.add(
+                    'new-user-expiry-unlimited'
+                  );
+                }
+              };
+
+            globalThis
+              .__GPTYAR_UNLIMITED_SENTINEL__ =
+              UNLIMITED_EXPIRES_AT;
+          })();
+          '''
+
+          popup_patch = r'''
+          /* === GPTYAR unlimited display v4 === */
+          ;(() => {
+            const UNLIMITED_YEAR = 2099;
+
+            const isUnlimitedExpiry = value => {
+              if (!value) return false;
+
+              const date =
+                value instanceof Date
+                  ? value
+                  : new Date(value);
+
+              return (
+                !Number.isNaN(date.getTime()) &&
+                date.getUTCFullYear() >=
+                  UNLIMITED_YEAR
+              );
+            };
+
+            const normalizeSubscription =
+              value => {
+
+                if (
+                  !value ||
+                  typeof value !== 'object'
+                ) {
+                  return value;
+                }
+
+                if (
+                  isUnlimitedExpiry(
+                    value.expiresAt
+                  )
+                ) {
+                  return {
+                    ...value,
+                    expiresAt: null
+                  };
+                }
+
+                return value;
+              };
+
+            const normalizeAccount =
+              account => {
+
+                if (
+                  !account ||
+                  typeof account !== 'object'
+                ) {
+                  return account;
+                }
+
+                const clone = {
+                  ...account
+                };
+
+                for (
+                  const key of
+                  Object.keys(clone)
+                ) {
+                  if (
+                    Array.isArray(
+                      clone[key]
+                    )
+                  ) {
+                    clone[key] =
+                      clone[key].map(
+                        normalizeSubscription
+                      );
+                  }
+                }
+
+                return clone;
+              };
+
+            if (
+              typeof SubscriptionManager !==
+                'undefined' &&
+              SubscriptionManager
+                .updateRemainingTimeDisplay
+            ) {
+              const originalRemaining =
+                SubscriptionManager
+                  .updateRemainingTimeDisplay;
+
+              SubscriptionManager
+                .updateRemainingTimeDisplay =
+                function (
+                  subscription,
+                  account
+                ) {
+                  return originalRemaining.call(
+                    this,
+                    subscription,
+                    normalizeSubscription(
+                      account
+                    )
+                  );
+                };
+            }
+
+            if (
+              typeof SubscriptionManager !==
+                'undefined' &&
+              SubscriptionManager
+                .displaySubscriptionsForAgent
+            ) {
+              const originalDisplay =
+                SubscriptionManager
+                  .displaySubscriptionsForAgent;
+
+              SubscriptionManager
+                .displaySubscriptionsForAgent =
+                function (account) {
+                  return originalDisplay.call(
+                    this,
+                    normalizeAccount(account)
+                  );
+                };
+            }
+          })();
+          '''
+
+          css_patch = r'''
+          /* === GPTYAR unlimited subscription UI v4 === */
+
+          .new-user-unlimited-row {
+            min-height: 54px;
+            gap: 12px;
+          }
+
+          .new-user-unlimited-copy {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 3px;
+            min-width: 0;
+          }
+
+          .new-user-unlimited-copy .detail-label {
+            color: #ffffff;
+            font-weight: 600;
+          }
+
+          .new-user-unlimited-hint {
+            color: #8892a0;
+            font-size: 10px;
+            line-height: 1.45;
+            white-space: nowrap;
+          }
+
+          .new-user-unlimited-switch {
+            position: relative;
+            display: inline-flex;
+            width: 42px;
+            height: 24px;
+            flex: 0 0 42px;
+            cursor: pointer;
+            user-select: none;
+          }
+
+          .new-user-unlimited-switch input {
+            position: absolute;
+            opacity: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+          }
+
+          .new-user-unlimited-slider {
+            position: absolute;
+            inset: 0;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            box-shadow:
+              inset 0 1px 2px rgba(0, 0, 0, 0.18);
+            transition:
+              background 0.22s ease,
+              border-color 0.22s ease,
+              box-shadow 0.22s ease;
+          }
+
+          .new-user-unlimited-knob {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            top: 2px;
+            right: 2px;
+            border-radius: 50%;
+            background: #ffffff;
+            box-shadow:
+              0 2px 5px rgba(0, 0, 0, 0.28);
+            transition:
+              transform 0.22s ease,
+              background 0.22s ease;
+          }
+
+          .new-user-unlimited-switch
+            input:checked +
+            .new-user-unlimited-slider {
+            background:
+              linear-gradient(
+                135deg,
+                #505081 0%,
+                #6d6da5 100%
+              );
+            border-color:
+              rgba(143, 143, 194, 0.55);
+            box-shadow:
+              0 0 0 3px
+                rgba(80, 80, 129, 0.13);
+          }
+
+          .new-user-unlimited-switch
+            input:checked +
+            .new-user-unlimited-slider
+            .new-user-unlimited-knob {
+            transform: translateX(-18px);
+          }
+
+          .new-user-unlimited-switch
+            input:focus-visible +
+            .new-user-unlimited-slider {
+            outline: 2px solid
+              rgba(143, 143, 194, 0.72);
+            outline-offset: 2px;
+          }
+
+          .new-user-expiry-unlimited {
+            color: #c8c8e8 !important;
+            font-weight: 700 !important;
+          }
+
+          .new-user-calendar-hidden {
+            display: none !important;
+          }
+          '''
+
+          if not ZIP.exists():
+              raise SystemExit("v4.6.2.zip not found")
+
+          with ZipFile(ZIP, "r") as zin:
+              names = zin.namelist()
+
+              def one_ending(suffix):
+                  matches = [
+                      n for n in names
+                      if n == suffix or
+                         n.endswith("/" + suffix)
+                  ]
+
+                  if len(matches) != 1:
+                      raise SystemExit(
+                          f"Expected exactly one {suffix}, found: {matches}"
+                      )
+
+                  return matches[0]
+
+              acc_name =
+                one_ending(
+                  "accupdator-manager.js"
+                )
+
+              popup_name =
+                one_ending(
+                  "popup.js"
+                )
+
+              css_name =
+                one_ending(
+                  "assets/styles.css"
+                )
+
+              acc =
+                zin.read(acc_name)
+                  .decode("utf-8")
+
+              popup =
+                zin.read(popup_name)
+                  .decode("utf-8")
+
+              css =
+                zin.read(css_name)
+                  .decode("utf-8")
+
+              positions = [
+                  acc.find(marker)
+                  for marker in ACC_MARKERS
+                  if acc.find(marker) >= 0
+              ]
+
+              if positions:
+                  acc =
+                    acc[
+                      :min(positions)
+                    ].rstrip()
+
+              acc += (
+                "\n\n" +
+                acc_patch.strip() +
+                "\n"
+              )
+
+              popup_pos =
+                popup.find(
+                  POPUP_MARKER
+                )
+
+              if popup_pos >= 0:
+                  popup =
+                    popup[
+                      :popup_pos
+                    ].rstrip()
+
+              popup += (
+                "\n\n" +
+                popup_patch.strip() +
+                "\n"
+              )
+
+              css_positions = [
+                  css.find(marker)
+                  for marker in CSS_MARKERS
+                  if css.find(marker) >= 0
+              ]
+
+              if css_positions:
+                  css =
+                    css[
+                      :min(css_positions)
+                    ].rstrip()
+
+              css += (
+                "\n\n" +
+                css_patch.strip() +
+                "\n"
+              )
+
+              Path(
+                "/tmp/accupdator-manager.js"
+              ).write_text(
+                acc,
+                encoding="utf-8"
+              )
+
+              Path(
+                "/tmp/popup.js"
+              ).write_text(
+                popup,
+                encoding="utf-8"
+              )
+
+              with ZipFile(
+                TMP,
+                "w"
+              ) as zout:
+                for info in zin.infolist():
+                  if (
+                    info.filename ==
+                    acc_name
+                  ):
+                    payload =
+                      acc.encode(
+                        "utf-8"
+                      )
+                  elif (
+                    info.filename ==
+                    popup_name
+                  ):
+                    payload =
+                      popup.encode(
+                        "utf-8"
+                      )
+                  elif (
+                    info.filename ==
+                    css_name
+                  ):
+                    payload =
+                      css.encode(
+                        "utf-8"
+                      )
+                  else:
+                    payload =
+                      zin.read(
+                        info.filename
+                      )
+
+                  zout.writestr(
+                    info,
+                    payload
+                  )
+
+          TMP.replace(ZIP)
+
+          print("Modified extension files:")
+          print(acc_name)
+          print(popup_name)
+          print(css_name)
+          PY
+
+      - name: Validate JavaScript
+        run: |
+          node --check /tmp/accupdator-manager.js
+          node --check /tmp/popup.js
+
+      - name: Commit patched ZIP
+        shell: bash
+        run: |
+          if git diff --quiet -- v4.6.2.zip; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git config user.name "GPT Yar Patch Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add v4.6.2.zip
+          git commit -m "Use server-compatible unlimited expiry and improve UI"
+          git push
