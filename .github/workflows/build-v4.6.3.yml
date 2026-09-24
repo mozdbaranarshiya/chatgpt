@@ -33,7 +33,9 @@ jobs:
         shell: bash
         run: |
           unzip -p v4.6.3-commerce-admin.zip v4.6.3/commerce-admin.js > /tmp/commerce-admin.js
+          unzip -p v4.6.3-commerce-admin.zip v4.6.3/commerce-discovery.js > /tmp/commerce-discovery.js
           node --check /tmp/commerce-admin.js
+          node --check /tmp/commerce-discovery.js
 
       - name: Commit generated ZIP
         shell: bash
