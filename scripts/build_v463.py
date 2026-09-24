@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import base64
 import json
 import shutil
 import tempfile
@@ -10,16 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ZIP = ROOT / "v4.6.2.zip"
-PATCH_DIR = ROOT / "patches" / "v4.6.3"
+PATCH_JS = ROOT / "patches" / "v4.6.3" / "commerce-admin.js"
 OUTPUT_ZIP = ROOT / "v4.6.3-commerce-admin.zip"
-
-
-def load_commerce_admin() -> bytes:
-    parts = sorted(PATCH_DIR.glob("commerce-admin.js.b64.part*"))
-    if not parts:
-        raise RuntimeError("commerce-admin base64 parts are missing")
-    encoded = "".join(part.read_text(encoding="ascii").strip() for part in parts)
-    return base64.b64decode(encoded)
 
 
 def patch_json(path: Path) -> None:
@@ -31,6 +22,8 @@ def patch_json(path: Path) -> None:
 def main() -> None:
     if not SOURCE_ZIP.exists():
         raise FileNotFoundError(SOURCE_ZIP)
+    if not PATCH_JS.exists():
+        raise FileNotFoundError(PATCH_JS)
 
     with tempfile.TemporaryDirectory(prefix="gptyar-v463-") as tmp_name:
         tmp = Path(tmp_name)
@@ -48,7 +41,7 @@ def main() -> None:
         extension_root = tmp / "v4.6.3"
         shutil.copytree(source_root, extension_root)
 
-        (extension_root / "commerce-admin.js").write_bytes(load_commerce_admin())
+        shutil.copy2(PATCH_JS, extension_root / "commerce-admin.js")
         patch_json(extension_root / "manifest.json")
         patch_json(extension_root / "package.json")
 
