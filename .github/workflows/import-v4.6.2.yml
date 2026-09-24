@@ -1,0 +1,33 @@
+name: Import v4.6.2 archive
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/import-v4.6.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download archive
+        env:
+          ARCHIVE_URL: "https://uc39f873205602732c6a6d453fe6.dl.dropboxusercontent.com/cd/0/get/DIt7xetYDYmO1FV1yG4Rhh0PZm_AdRDE8MQ-A9U14VgwsrZ04OMhqMBdQfZPgOuBogXVqQ-6m2bUWBHPYkI5GP5h30Ry6iKNLlBDwB_AJKmlYQA9E7WG02BIyOEMlT8F4T1ys4nGwLBzgRNobIBaSxx99rsBQP4AyXIai5UeroFHBg/file?c_luid=3ba52ba1"
+        run: |
+          curl -L --fail --silent --show-error "$ARCHIVE_URL" -o v4.6.2.zip
+          test -s v4.6.2.zip
+
+      - name: Commit archive
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add v4.6.2.zip
+          git commit -m "Add v4.6.2 archive"
+          git push
