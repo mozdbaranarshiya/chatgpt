@@ -1,6 +1,6 @@
 # GPT Yar v4.6.3 — Commerce Admin
 
-This update adds an authenticated admin panel for coupon management and catalog-price management.
+This update adds an authenticated admin panel for coupon management and catalog-price management, plus a passive API-discovery tool for finding the backend routes actually used by the GPTYAR web application.
 
 ## What changed
 
@@ -9,13 +9,18 @@ This update adds an authenticated admin panel for coupon management and catalog-
 - Adds catalog product lookup and backend-authorized price update UI.
 - Adds configurable endpoint templates in the extension UI.
 - Adds capability probing so unsupported backend routes are reported instead of silently failing.
-- Shows raw backend responses to make API-contract debugging easier.
+- Adds **کشف API فروشگاه**:
+  - observes `fetch` and `XMLHttpRequest` calls only on `gptyar.com` / subdomains;
+  - records method, URL, status, duration and sanitized request/response previews;
+  - highlights requests related to coupon, discount, product, price, cart, checkout, order and payment;
+  - redacts tokens, cookies, passwords, OTP/MFA, phone numbers and emails;
+  - never blocks, changes or replays a request.
 - Requires explicit confirmation before write/delete operations.
 - Does **not** tamper with client-side checkout totals.
 
 ## Default backend contract
 
-The original v4.6.2 extension did not expose coupon/product admin endpoints, so the new panel defaults to a proposed, configurable contract:
+The original v4.6.2 extension did not expose coupon/product admin endpoints, so the admin panel still contains configurable placeholder defaults:
 
 ```text
 GET    /accupdator/coupons
@@ -26,7 +31,7 @@ GET    /accupdator/products
 PATCH  /accupdator/products/{id}/price
 ```
 
-If the backend uses different routes, open the **API** tab in the new panel and change the paths.
+The API-discovery tool is intended to identify the real routes used by the existing management/web application. Once identified, those routes can be entered in the **API** tab.
 
 ## Build
 
@@ -34,4 +39,4 @@ If the backend uses different routes, open the **API** tab in the new panel and 
 python scripts/build_v463.py
 ```
 
-The GitHub Actions workflow also builds and commits `v4.6.3-commerce-admin.zip` on this feature branch.
+GitHub Actions builds `v4.6.3-commerce-admin.zip` and validates both injected JavaScript files with `node --check`.
