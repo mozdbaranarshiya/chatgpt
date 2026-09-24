@@ -249,7 +249,7 @@
       ".discovery-backdrop{position:fixed;inset:0;z-index:2147483640;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px}" +
       ".discovery-modal{direction:rtl;width:min(760px,100%);max-height:calc(100vh - 20px);overflow:hidden;background:#111827;color:#f8fafc;border:1px solid #334155;border-radius:16px;font-family:Vazirmatn,inherit}" +
       ".discovery-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #334155}.discovery-close{background:#334155;color:#fff;border:0;border-radius:8px;width:32px;height:32px;cursor:pointer}" +
-      ".discovery-body{padding:12px;overflow:auto;max-height:calc(100vh - 80px)}.discovery-note{font-size:10px;color:#94a3b8;line-height:1.8}.discovery-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.discovery-btn{border:0;border-radius:8px;padding:8px 10px;background:#334155;color:white;font:700 11px inherit;cursor:pointer}.discovery-btn.primary{background:#0f766e}.discovery-btn.danger{background:#b91c1c}" +
+      ".discovery-body{padding:12px;overflow:auto;max-height:calc(100dvh - 96px)}.discovery-note{font-size:10px;color:#94a3b8;line-height:1.8}.discovery-actions{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.discovery-btn{width:auto!important;flex:1 1 95px;min-width:0;border:0;border-radius:8px;padding:8px 10px;background:#334155;color:white;font:700 11px inherit;cursor:pointer}.discovery-btn.primary{background:#0f766e}.discovery-btn.danger{background:#b91c1c}" +
       ".discovery-status{padding:8px 10px;border-radius:8px;background:#1e3a8a;font-size:11px;margin-bottom:10px}.discovery-status.ok{background:#065f46}.discovery-status.bad{background:#7f1d1d}.discovery-output{direction:ltr;text-align:left;white-space:pre-wrap;max-height:420px;overflow:auto;background:#020617;border:1px solid #263247;border-radius:8px;padding:9px;font:10px monospace;color:#cbd5e1}";
     document.head.appendChild(style);
   }
@@ -312,17 +312,38 @@
       } catch (e) { status(e.message, "bad"); }
     });
   }
+  function ensureToolsHost() {
+    const section = qs("#accupdator-section");
+    if (!section) return null;
+    const content = qs(".accupdator-content", section) || qs("#accupdatorPanel", section);
+    if (!content) return null;
+
+    let card = qs("#gptyarCommerceToolsCard", section);
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "gptyarCommerceToolsCard";
+      card.className = "accupdator-section-card";
+      card.innerHTML =
+        '<div class="section-card-header"><span>ابزارهای فروشگاه</span></div>' +
+        '<div class="section-card-content"><div id="gptyarCommerceToolsButtons" class="accupdator-buttons"></div></div>';
+      content.appendChild(card);
+    }
+    return qs("#gptyarCommerceToolsButtons", card);
+  }
   function ensureButton() {
-    if (qs("#" + BTN_ID)) return;
-    const section = qs("#accupdator-section") || document.body;
-    const target = qs(".accupdator-buttons", section) || qs("#accupdatorPanel", section) || section;
-    const btn = document.createElement("button");
-    btn.id = BTN_ID;
-    btn.type = "button";
-    btn.className = "discovery-open";
-    btn.textContent = "کشف API فروشگاه";
-    btn.addEventListener("click", () => qs(".discovery-backdrop", document.getElementById(ROOT_ID)).hidden = false);
-    target.appendChild(btn);
+    const target = ensureToolsHost();
+    if (!target) return;
+
+    let btn = qs("#" + BTN_ID);
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = BTN_ID;
+      btn.type = "button";
+      btn.className = "accupdator-btn secondary-btn";
+      btn.textContent = "کشف API فروشگاه";
+      btn.addEventListener("click", () => qs(".discovery-backdrop", document.getElementById(ROOT_ID)).hidden = false);
+    }
+    if (btn.parentElement !== target) target.appendChild(btn);
   }
   function init() {
     injectStyle();
