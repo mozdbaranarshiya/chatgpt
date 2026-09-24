@@ -1,0 +1,138 @@
+name: Fix unlimited subscriber creation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/fix-unlimited-create.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Patch unlimited create request
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          zip_path = Path("v4.6.2.zip")
+          temp_path = Path("v4.6.2.zip.tmp")
+          check_path = Path("/tmp/accupdator-manager.js")
+          marker = "=== GPTYAR unlimited API null fix v2 ==="
+
+          patch = r'''
+          /* === GPTYAR unlimited API null fix v2 === */
+          ;(() => {
+            const originalCreateUser = AccupdatorAPI.createUser.bind(AccupdatorAPI);
+
+            AccupdatorAPI.createUser = async function (name, expiryDate = null) {
+              if (expiryDate) {
+                return originalCreateUser(name, expiryDate);
+              }
+
+              // Unlimited subscriptions must explicitly send expiresAt: null.
+              // Omitting the field can fail server-side validation.
+              const url = CONFIG.API_SERVER + '/accupdator/subscribers/create';
+              return await this._request(url, 'POST', {
+                name,
+                expiresAt: null
+              });
+            };
+
+            const currentHandleCreateNewUser =
+              AccupdatorManager._handleCreateNewUser;
+
+            AccupdatorManager._handleCreateNewUser = async function () {
+              try {
+                return await currentHandleCreateNewUser.call(this);
+              } catch (error) {
+                // Keep the real API error visible instead of hiding it.
+                const message =
+                  error && error.message
+                    ? error.message
+                    : 'خطای نامشخص';
+
+                globalThis.__GPTYAR_DEV_LOG__?.(
+                  '[AccupdatorManager] Unlimited create error:',
+                  error
+                );
+
+                NotificationManager.showError(
+                  'خطا در ایجاد کاربر جدید: ' + message
+                );
+
+                throw error;
+              }
+            };
+          })();
+          '''
+
+          if not zip_path.exists():
+              raise SystemExit("v4.6.2.zip not found")
+
+          with ZipFile(zip_path, "r") as zin:
+              candidates = [
+                  name for name in zin.namelist()
+                  if name == "accupdator-manager.js"
+                  or name.endswith("/accupdator-manager.js")
+              ]
+
+              if len(candidates) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one accupdator-manager.js, found: {candidates}"
+                  )
+
+              target = candidates[0]
+              original = zin.read(target).decode("utf-8")
+
+              if marker in original:
+                  modified = original
+                  changed = False
+              else:
+                  modified = original.rstrip() + "\n\n" + patch.strip() + "\n"
+                  changed = True
+
+              check_path.write_text(modified, encoding="utf-8")
+
+              if changed:
+                  with ZipFile(temp_path, "w") as zout:
+                      for info in zin.infolist():
+                          payload = (
+                              modified.encode("utf-8")
+                              if info.filename == target
+                              else zin.read(info.filename)
+                          )
+                          zout.writestr(info, payload)
+
+          if changed:
+              temp_path.replace(zip_path)
+              print(f"Patched: {target}")
+          else:
+              print(f"Already patched: {target}")
+          PY
+
+      - name: Validate JavaScript syntax
+        run: node --check /tmp/accupdator-manager.js
+
+      - name: Commit fixed ZIP
+        shell: bash
+        run: |
+          if git diff --quiet -- v4.6.2.zip; then
+            echo "No ZIP changes to commit."
+            exit 0
+          fi
+
+          git config user.name "GPT Yar Patch Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add v4.6.2.zip
+          git commit -m "Fix unlimited subscriber creation request"
+          git push
