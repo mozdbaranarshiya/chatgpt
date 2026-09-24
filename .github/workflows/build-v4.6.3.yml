@@ -29,6 +29,12 @@ jobs:
       - name: Build extension ZIP
         run: python scripts/build_v463.py
 
+      - name: Validate injected JavaScript
+        shell: bash
+        run: |
+          unzip -p v4.6.3-commerce-admin.zip v4.6.3/commerce-admin.js > /tmp/commerce-admin.js
+          node --check /tmp/commerce-admin.js
+
       - name: Commit generated ZIP
         shell: bash
         run: |
