@@ -1,0 +1,271 @@
+name: Patch unlimited subscription option
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/patch-unlimited.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Patch accupdator-manager.js inside extension ZIP
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          zip_path = Path("v4.6.2.zip")
+          temp_path = Path("v4.6.2.zip.tmp")
+          check_path = Path("/tmp/modified-accupdator-manager.js")
+          marker = "=== GPTYAR unlimited new-user option v1 ==="
+
+          patch = r'''
+          /* === GPTYAR unlimited new-user option v1 === */
+          ;(() => {
+            const UNLIMITED_ID = 'newUserUnlimited';
+            const UNLIMITED_ROW_ID = 'newUserUnlimitedRow';
+
+            const getExpiryElement = manager =>
+              DOMManager.getElement(manager.ELEMENT_IDS.NEW_USER_EXPIRY);
+
+            const getCalendarContainer = manager => {
+              const calendar = DOMManager.getElement(manager.ELEMENT_IDS.NEW_USER_CALENDAR);
+              return calendar ? calendar.closest('.subscriber-calendar-container') : null;
+            };
+
+            const syncUnlimitedUI = manager => {
+              const checkbox = document.getElementById(UNLIMITED_ID);
+              const expiry = getExpiryElement(manager);
+              const calendarContainer = getCalendarContainer(manager);
+              const unlimited = Boolean(checkbox && checkbox.checked);
+
+              if (calendarContainer) {
+                calendarContainer.style.display = unlimited ? 'none' : '';
+              }
+
+              if (expiry) {
+                if (unlimited) {
+                  expiry.textContent = 'نامحدود';
+                  expiry.classList.add('selected');
+                } else if (manager._newUserExpiryDate) {
+                  expiry.textContent = manager._formatPersianDate(manager._newUserExpiryDate);
+                  expiry.classList.add('selected');
+                } else {
+                  expiry.textContent = 'انتخاب نشده';
+                  expiry.classList.remove('selected');
+                }
+              }
+            };
+
+            const ensureUnlimitedControl = manager => {
+              let checkbox = document.getElementById(UNLIMITED_ID);
+              if (checkbox) return checkbox;
+
+              const expiry = getExpiryElement(manager);
+              const expiryRow = expiry ? expiry.closest('.detail-row') : null;
+              if (!expiryRow) return null;
+
+              const row = document.createElement('div');
+              row.id = UNLIMITED_ROW_ID;
+              row.className = 'detail-row new-user-unlimited-row';
+              row.style.cssText = 'align-items:center;gap:12px;';
+              row.innerHTML = `
+                <span class="detail-label">مدت اشتراک:</span>
+                <label for="${UNLIMITED_ID}" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+                  <input id="${UNLIMITED_ID}" type="checkbox" style="width:18px;height:18px;cursor:pointer;accent-color:#22c55e;">
+                  <span style="font-weight:700;">نامحدود</span>
+                </label>`;
+
+              expiryRow.insertAdjacentElement('afterend', row);
+              checkbox = document.getElementById(UNLIMITED_ID);
+
+              if (checkbox) {
+                checkbox.addEventListener('change', () => {
+                  syncUnlimitedUI(manager);
+                  manager._updateNewUserCreateButtonState();
+                });
+              }
+
+              return checkbox;
+            };
+
+            const originalSetupNewUserMenuEventListeners =
+              AccupdatorManager._setupNewUserMenuEventListeners;
+
+            AccupdatorManager._setupNewUserMenuEventListeners = function () {
+              originalSetupNewUserMenuEventListeners.call(this);
+              ensureUnlimitedControl(this);
+              syncUnlimitedUI(this);
+            };
+
+            const originalResetNewUserForm = AccupdatorManager._resetNewUserForm;
+
+            AccupdatorManager._resetNewUserForm = function () {
+              originalResetNewUserForm.call(this);
+
+              const checkbox = ensureUnlimitedControl(this);
+              if (checkbox) checkbox.checked = false;
+
+              syncUnlimitedUI(this);
+              this._updateNewUserCreateButtonState();
+            };
+
+            AccupdatorManager._updateNewUserCreateButtonState = function () {
+              const nameInput =
+                DOMManager.getElement(this.ELEMENT_IDS.NEW_USER_NAME_INPUT);
+              const createButton =
+                DOMManager.getElement(this.ELEMENT_IDS.NEW_USER_CREATE_BTN);
+
+              if (!nameInput || !createButton) return;
+
+              const checkbox = document.getElementById(UNLIMITED_ID);
+              const hasName = nameInput.value.trim().length > 0;
+              const isUnlimited = Boolean(checkbox && checkbox.checked);
+              const hasExpiry = this._newUserExpiryDate !== null;
+
+              createButton.disabled = !(hasName && (isUnlimited || hasExpiry));
+            };
+
+            AccupdatorManager._handleCreateNewUser = async function () {
+              const nameInput =
+                DOMManager.getElement(this.ELEMENT_IDS.NEW_USER_NAME_INPUT);
+              const checkbox = document.getElementById(UNLIMITED_ID);
+              const isUnlimited = Boolean(checkbox && checkbox.checked);
+
+              if (!nameInput || (!isUnlimited && !this._newUserExpiryDate)) return;
+
+              const name = nameInput.value.trim();
+              if (!name) return;
+
+              const createButton =
+                DOMManager.getElement(this.ELEMENT_IDS.NEW_USER_CREATE_BTN);
+
+              try {
+                this._setButtonLoading(createButton, true);
+
+                const createdUser = await this.createNewUser(
+                  name,
+                  isUnlimited ? null : this._newUserExpiryDate
+                );
+
+                NotificationManager.showSuccess('کاربر جدید با موفقیت ایجاد شد');
+
+                if (isUnlimited) {
+                  this._hideNewUserMenu();
+                  await this._loadSubscribers();
+                  await this.refreshAccountInfo();
+                } else {
+                  const newUserMenu =
+                    DOMManager.getElement(this.ELEMENT_IDS.NEW_USER_MENU);
+
+                  if (newUserMenu) {
+                    newUserMenu.classList.remove('active');
+                  }
+
+                  this._showCreatedUserDetails(createdUser);
+                  await this._loadSubscribers();
+                  await this.refreshAccountInfo();
+                }
+              } catch (error) {
+                globalThis.__GPTYAR_DEV_LOG__?.(
+                  '[AccupdatorManager] Error creating new user:',
+                  error
+                );
+                NotificationManager.showError('خطا در ایجاد کاربر جدید');
+              } finally {
+                this._setButtonLoading(createButton, false);
+                this._updateNewUserCreateButtonState();
+              }
+            };
+          })();
+          '''
+
+          if not zip_path.exists():
+              raise SystemExit("v4.6.2.zip not found")
+
+          with ZipFile(zip_path, "r") as zin:
+              candidates = [
+                  name for name in zin.namelist()
+                  if name == "accupdator-manager.js"
+                  or name.endswith("/accupdator-manager.js")
+              ]
+
+              if len(candidates) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one accupdator-manager.js, found: {candidates}"
+                  )
+
+              target = candidates[0]
+              original = zin.read(target).decode("utf-8")
+
+              if marker in original:
+                  modified = original
+                  changed = False
+              else:
+                  required = [
+                      "AccupdatorManager",
+                      "_setupNewUserMenuEventListeners",
+                      "_resetNewUserForm",
+                      "_updateNewUserCreateButtonState",
+                      "_handleCreateNewUser",
+                      "createNewUser",
+                      "NEW_USER_EXPIRY",
+                      "NEW_USER_CALENDAR",
+                      "NEW_USER_CREATE_BTN",
+                  ]
+
+                  missing = [item for item in required if item not in original]
+                  if missing:
+                      raise SystemExit(
+                          "Expected extension structure was not found. Missing: "
+                          + ", ".join(missing)
+                      )
+
+                  modified = original.rstrip() + "\n\n" + patch.strip() + "\n"
+                  changed = True
+
+              check_path.write_text(modified, encoding="utf-8")
+
+              if changed:
+                  with ZipFile(temp_path, "w") as zout:
+                      for info in zin.infolist():
+                          payload = (
+                              modified.encode("utf-8")
+                              if info.filename == target
+                              else zin.read(info.filename)
+                          )
+                          zout.writestr(info, payload)
+
+          if changed:
+              temp_path.replace(zip_path)
+              print(f"Patched: {target}")
+          else:
+              print(f"Already patched: {target}")
+          PY
+
+      - name: Validate JavaScript syntax
+        run: node --check /tmp/modified-accupdator-manager.js
+
+      - name: Commit patched ZIP
+        shell: bash
+        run: |
+          if git diff --quiet -- v4.6.2.zip; then
+            echo "No ZIP changes to commit."
+            exit 0
+          fi
+
+          git config user.name "GPT Yar Patch Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add v4.6.2.zip
+          git commit -m "Add unlimited option for new subscriptions"
+          git push
