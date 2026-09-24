@@ -267,8 +267,8 @@
       ".commerce-status{margin:10px 12px 0;padding:8px 10px;border-radius:8px;background:#1e3a8a;font-size:11px}.commerce-status.ok{background:#065f46}.commerce-status.bad{background:#7f1d1d}" +
       ".commerce-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:10px 12px}.commerce-tab{border:1px solid #334155;background:#1e293b;color:#cbd5e1;border-radius:8px;padding:8px;font:700 11px inherit;cursor:pointer}.commerce-tab.active{background:#334155;color:#fff}" +
       ".commerce-body{padding:12px;overflow:auto;max-height:calc(100vh - 155px)}.commerce-pane{display:none}.commerce-pane.active{display:block}.commerce-card{background:#0f172a;border:1px solid #273449;border-radius:12px;padding:11px;margin-bottom:10px}.commerce-card h3{font-size:12px;margin:0 0 9px}.commerce-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.commerce-field{display:flex;flex-direction:column;gap:4px}.commerce-field label{font-size:10px;color:#a5b4fc}.commerce-field input,.commerce-field select{border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;font:11px inherit;box-sizing:border-box;width:100%}" +
-      ".commerce-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.commerce-btn{border:0;border-radius:8px;padding:8px 10px;background:#334155;color:white;font:700 11px inherit;cursor:pointer}.commerce-btn.primary{background:#2563eb}.commerce-btn.success{background:#059669}.commerce-btn.danger{background:#dc2626}.commerce-btn.warn{background:#d97706}.commerce-btn:disabled{opacity:.55}" +
-      ".commerce-list{display:flex;flex-direction:column;gap:6px;margin-top:9px}.commerce-row{text-align:right;border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}.commerce-row span{color:#94a3b8;font-size:10px}.commerce-note{font-size:10px;color:#94a3b8;line-height:1.7}.commerce-json{direction:ltr;text-align:left;white-space:pre-wrap;max-height:180px;overflow:auto;background:#020617;border:1px solid #263247;border-radius:8px;padding:8px;font:10px monospace;color:#cbd5e1}" +
+      ".commerce-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.commerce-btn{width:auto!important;flex:1 1 92px;min-width:0;border:0;border-radius:8px;padding:8px 10px;background:#334155;color:white;font:700 11px inherit;cursor:pointer}.commerce-btn.primary{background:#2563eb}.commerce-btn.success{background:#059669}.commerce-btn.danger{background:#dc2626}.commerce-btn.warn{background:#d97706}.commerce-btn:disabled{opacity:.55}" +
+      ".commerce-list{display:flex;flex-direction:column;gap:6px;margin-top:9px}.commerce-row{width:100%!important;text-align:right;border:1px solid #334155;background:#020617;color:#fff;border-radius:8px;padding:8px;display:flex;justify-content:space-between;gap:8px;cursor:pointer}.commerce-row span{color:#94a3b8;font-size:10px}.commerce-field input[type=checkbox]{width:auto!important}.commerce-note{font-size:10px;color:#94a3b8;line-height:1.7}.commerce-json{direction:ltr;text-align:left;white-space:pre-wrap;max-height:180px;overflow:auto;background:#020617;border:1px solid #263247;border-radius:8px;padding:8px;font:10px monospace;color:#cbd5e1}" +
       "@media(max-width:560px){.commerce-grid{grid-template-columns:1fr}}";
     document.head.appendChild(s);
   }
@@ -325,18 +325,38 @@
   }
   function open() { fillConfig(); qs(".commerce-backdrop", root).hidden = false; }
   function close() { qs(".commerce-backdrop", root).hidden = true; }
-  function ensureButton() {
-    if (qs("#" + BTN_ID)) return;
+  function ensureToolsHost() {
     const section = qs("#accupdator-section");
-    if (!section) return;
-    const target = qs(".accupdator-buttons", section) || qs("#accupdatorPanel", section) || section;
-    const btn = document.createElement("button");
-    btn.id = BTN_ID;
-    btn.className = "commerce-open";
-    btn.type = "button";
-    btn.textContent = "مدیریت تخفیف و قیمت";
-    btn.addEventListener("click", open);
-    target.appendChild(btn);
+    if (!section) return null;
+    const content = qs(".accupdator-content", section) || qs("#accupdatorPanel", section);
+    if (!content) return null;
+
+    let card = qs("#gptyarCommerceToolsCard", section);
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "gptyarCommerceToolsCard";
+      card.className = "accupdator-section-card";
+      card.innerHTML =
+        '<div class="section-card-header"><span>ابزارهای فروشگاه</span></div>' +
+        '<div class="section-card-content"><div id="gptyarCommerceToolsButtons" class="accupdator-buttons"></div></div>';
+      content.appendChild(card);
+    }
+    return qs("#gptyarCommerceToolsButtons", card);
+  }
+  function ensureButton() {
+    const target = ensureToolsHost();
+    if (!target) return;
+
+    let btn = qs("#" + BTN_ID);
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = BTN_ID;
+      btn.className = "accupdator-btn secondary-btn";
+      btn.type = "button";
+      btn.textContent = "مدیریت تخفیف و قیمت";
+      btn.addEventListener("click", open);
+    }
+    if (btn.parentElement !== target) target.appendChild(btn);
   }
   function init() {
     injectStyle();
